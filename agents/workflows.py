@@ -1,15 +1,27 @@
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from langchain_core.exceptions import OutputParserException
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
 from langchain_openai import ChatOpenAI
 from tools.rag_tool import rag_tool
 from langgraph.checkpoint.memory import InMemorySaver
 import base64
-from schemas.schema import ConversationState, InspectionState, InspectionResult
+import json
+from schemas.schema import (
+    ConversationState,
+    InspectionState,
+    InspectionResult,
+    ResolutionVerificationResult,
+    ResolutionVerificationState,
+)
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy, StructuredOutputError
 from pydantic import ValidationError
-from agents.prompts import SOP_QUERY_SYSTEM_PROMPT, INSPECTION_SYSTEM_PROMPT
+from agents.prompts import (
+    SOP_QUERY_SYSTEM_PROMPT,
+    INSPECTION_SYSTEM_PROMPT,
+    RESOLUTION_VERIFICATION_SYSTEM_PROMPT,
+)
 
 def create_rag_workflow():
     llm_with_tools = ChatOpenAI(model="gpt-4o-mini").bind_tools([rag_tool])
@@ -129,5 +141,66 @@ def create_inspection_workflow():
     graph.add_edge("encode", "analyze")
     graph.add_edge("analyze", "validate")
     graph.add_edge("validate", END)
+
+    return graph.compile()
+
+
+def create_resolution_verification_workflow():
+    model = ChatOpenAI(model="gpt-4o-mini").with_structured_output(
+        ResolutionVerificationResult
+    )
+
+    def verify(state: ResolutionVerificationState) -> dict:
+        try:
+            verification = model.invoke([
+                SystemMessage(content=RESOLUTION_VERIFICATION_SYSTEM_PROMPT),
+                HumanMessage(content=[
+                    {
+                        "type": "text",
+                        "text": json.dumps({
+                            "task_context": state["task_context"],
+                            "correction_note": state.get("description"),
+                        }, default=str),
+                    },
+                    {
+                        "type": "text",
+                        "text": "Original inspection photo:",
+                    },
+                    {
+                        "type": "image",
+                        "base64": base64.b64encode(
+                            state["original_image_bytes"]
+                        ).decode(),
+                        "mime_type": state["original_mime_type"],
+                    },
+                    {
+                        "type": "text",
+                        "text": "Correction photo:",
+                    },
+                    {
+                        "type": "image",
+                        "base64": base64.b64encode(
+                            state["correction_image_bytes"]
+                        ).decode(),
+                        "mime_type": state["correction_mime_type"],
+                    },
+                ]),
+            ])
+        except (ValidationError, OutputParserException):
+            verification = ResolutionVerificationResult(
+                assessment="INSUFFICIENT_EVIDENCE",
+                summary="The correction could not be reliably assessed.",
+                observations=[],
+                evidence_limitations=[
+                    "The model returned an invalid result. Retry verification."
+                ],
+            )
+
+        return {"verification": verification.model_dump()}
+
+    graph = StateGraph(ResolutionVerificationState)
+    graph.add_node("verify", verify)
+    graph.add_edge(START, "verify")
+    graph.add_edge("verify", END)
 
     return graph.compile()

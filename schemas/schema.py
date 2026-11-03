@@ -55,3 +55,20 @@ class CorrectiveProposal(BaseModel):
         if self.decision == "POSSIBLE_DUPLICATE" and not self.existing_task_id:
             raise ValueError("A possible duplicate requires an existing task ID.")
         return self
+
+
+class ResolutionVerificationResult(BaseModel):
+    assessment: Literal["APPEARS_RESOLVED", "NOT_RESOLVED", "INSUFFICIENT_EVIDENCE"]
+    summary: str = Field(min_length=1)
+    observations: list[str]
+    evidence_limitations: list[str]
+
+
+class ResolutionVerificationState(TypedDict):
+    task_context: dict
+    original_image_bytes: bytes
+    original_mime_type: str
+    correction_image_bytes: bytes
+    correction_mime_type: str
+    description: str | None
+    verification: dict
