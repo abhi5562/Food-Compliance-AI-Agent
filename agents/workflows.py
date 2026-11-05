@@ -1,4 +1,6 @@
-from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+from asyncio import run
+
+from langchain_core.messages import AIMessage, SystemMessage, HumanMessage, ToolMessage
 from langchain_core.exceptions import OutputParserException
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -9,6 +11,7 @@ import base64
 import json
 from schemas.schema import (
     ConversationState,
+    SOPQueryRoute,
     InspectionState,
     InspectionResult,
     ResolutionVerificationResult,
@@ -17,7 +20,9 @@ from schemas.schema import (
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy, StructuredOutputError
 from pydantic import ValidationError
+from agents.a2a_client import request_corrective_proposal
 from agents.prompts import (
+    SOP_QUERY_ROUTER_PROMPT,
     SOP_QUERY_SYSTEM_PROMPT,
     INSPECTION_SYSTEM_PROMPT,
     RESOLUTION_VERIFICATION_SYSTEM_PROMPT,
@@ -25,8 +30,26 @@ from agents.prompts import (
 
 def create_rag_workflow():
     llm_with_tools = ChatOpenAI(model="gpt-4o-mini").bind_tools([rag_tool])
+    router_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0).with_structured_output(SOPQueryRoute)
 
     tool_node = ToolNode([rag_tool])
+
+    def route_query(state: ConversationState):
+        recent_messages = [
+            message for message in state["messages"]
+            if isinstance(message, (HumanMessage, AIMessage))
+            and not (isinstance(message, AIMessage) and message.tool_calls)
+        ][-6:]
+        response = router_llm.invoke([
+            SystemMessage(content=SOP_QUERY_ROUTER_PROMPT),
+            *recent_messages,
+        ])
+        return "chat" if response.route == "RELATED" else "reject"
+
+    def reject_node(state: ConversationState):
+        return {"messages": [AIMessage(
+            content="I can help with restaurant SOPs, hygiene, storage, and cleaning procedures."
+        )]}
 
     def chat_node(state: ConversationState):
         messages = [
@@ -42,10 +65,11 @@ def create_rag_workflow():
 
     graph.add_node("chat", chat_node)
     graph.add_node("tools", tool_node)
-    graph.add_edge(START, "chat")
+    graph.add_node("reject", reject_node)
+    graph.add_conditional_edges(START, route_query, {"chat": "chat", "reject": "reject"})
     graph.add_conditional_edges("chat", tools_condition)
     graph.add_edge("tools", "chat")
-    graph.add_edge("chat", END)
+    graph.add_edge("reject", END)
 
     return graph.compile(checkpointer=InMemorySaver())
 
@@ -202,5 +226,22 @@ def create_resolution_verification_workflow():
     graph.add_node("verify", verify)
     graph.add_edge(START, "verify")
     graph.add_edge("verify", END)
+
+    return graph.compile()
+
+
+def create_corrective_proposal_workflow():
+    def request_proposal(state: dict) -> dict:
+        proposal = run(request_corrective_proposal(
+            state["finding"],
+            state["category"],
+            state["existing_tasks"],
+        ))
+        return {"proposal": proposal}
+
+    graph = StateGraph(dict)
+    graph.add_node("request_proposal", request_proposal)
+    graph.add_edge(START, "request_proposal")
+    graph.add_edge("request_proposal", END)
 
     return graph.compile()

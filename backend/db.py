@@ -238,7 +238,7 @@ def save_resolution_attempt(task_id, image_reference, ai_verification, descripti
                     Jsonb(ai_verification),
                 ),
             )
-            return cursor.fetchone()
+            return cursor.fetchone() 
 
 
 def get_pending_verifications(category) -> list[dict]:
@@ -335,3 +335,38 @@ def get_correction_image_reference(evidence_id) -> dict | None:
                 (evidence_id,),
             )
             return cursor.fetchone()
+
+
+def get_inspection_findings(inspection_id) -> list[dict]:
+    """Read saved findings and their inspection category."""
+    with psycopg.connect(
+        os.environ["DATABASE_URL"], connect_timeout=10
+    ) as connection:
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """
+                SELECT f.*, i.category
+                FROM findings f
+                JOIN inspections i ON i.id = f.inspection_id
+                WHERE f.inspection_id = %s
+                """,
+                (inspection_id,),
+            )
+            return cursor.fetchall()
+
+
+def get_dashboard_tasks():
+    """Read corrective tasks across all categories for the dashboard."""
+    with psycopg.connect(
+        os.environ["DATABASE_URL"], connect_timeout=10
+    ) as connection:
+        with connection.cursor(row_factory=dict_row) as cursor:
+            cursor.execute(
+                """
+                SELECT id, category, title, description, status,
+                       created_at, closed_at
+                FROM corrective_actions
+                ORDER BY created_at DESC
+                """
+            )
+            return cursor.fetchall()

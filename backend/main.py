@@ -3,18 +3,24 @@ from uuid import UUID
 from typing import Literal
 
 import psycopg
+from a2a.utils.errors import A2AError
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from openai import OpenAIError
 from pinecone.exceptions import PineconeException
 
-from agents.corrective_actions import prepare_corrective_action
-from agents.workflows import create_inspection_workflow, create_resolution_verification_workflow
+from agents.workflows import (
+    create_corrective_proposal_workflow,
+    create_inspection_workflow,
+    create_resolution_verification_workflow,
+)
 from backend.db import (
     decide_proposal,
     decide_resolution,
     get_correction_image_reference,
+    get_dashboard_tasks,
     get_finding,
+    get_inspection_findings,
     get_open_actions,
     get_pending_verifications,
     get_resolution_context,
@@ -30,6 +36,16 @@ from schemas.schema import InspectionCategory
 
 app = FastAPI(title="Food Compliance API")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    try:
+        return get_dashboard_tasks()
+    except psycopg.Error as error:
+        raise HTTPException(
+            status_code=503, detail="Could not load dashboard tasks."
+        ) from error
 
 
 @app.post("/api/inspections", status_code=201)
@@ -79,25 +95,41 @@ def create_inspection(
             detail="The inspection result could not be saved. The photo remains stored in S3.",
         ) from error
 
+    proposal_results = []
+    proposal_errors = []
+
+    if result["analysis"]["assessment"] == "POTENTIAL_VIOLATION":
+        try:
+            findings = get_inspection_findings(inspection_id)
+        except psycopg.Error:
+            proposal_errors.append({
+                "finding_id": None,
+                "error": "Inspection saved, but findings could not be loaded for proposals.",
+            })
+        else:
+            for finding in findings:
+                try:
+                    proposal_results.append(
+                        generate_corrective_proposal(finding)
+                    )
+                except HTTPException as error:
+                    proposal_errors.append({
+                        "finding_id": str(finding["id"]),
+                        "error": error.detail,
+                    })
+
     return {
         "inspection_id": inspection_id,
         "category": category.value,
         "analysis": result["analysis"],
         "retrieved_evidence": result["retrieved_evidence"],
         "image_reference": reference,
+        "proposal_results": proposal_results,
+        "proposal_errors": proposal_errors,
     }
 
 
-@app.post("/api/proposals/{finding_id}")
-def create_corrective_proposal(finding_id: UUID):
-    try:
-        finding = get_finding(finding_id)
-    except psycopg.Error as error:
-        raise HTTPException(status_code=503, detail="Could not read the finding.") from error
-
-    if finding is None:
-        raise HTTPException(status_code=404, detail="Finding not found.")
-
+def generate_corrective_proposal(finding) -> dict:
     try:
         unresolved_actions = get_unresolved_actions(finding["category"])
     except psycopg.Error as error:
@@ -117,8 +149,13 @@ def create_corrective_proposal(finding_id: UUID):
             }
 
     try:
-        proposal = prepare_corrective_action(finding, finding["category"], unresolved_actions)
-    except (OpenAIError, ValueError) as error:
+        result = create_corrective_proposal_workflow().invoke({
+            "finding": finding,
+            "category": finding["category"],
+            "existing_tasks": unresolved_actions,
+        })
+        proposal = result["proposal"]
+    except (A2AError, ValueError) as error:
         raise HTTPException(status_code=502, detail="Could not prepare a corrective proposal.") from error
 
     if proposal["decision"] == "POSSIBLE_DUPLICATE":
@@ -133,6 +170,22 @@ def create_corrective_proposal(finding_id: UUID):
             raise HTTPException(status_code=503, detail="Could not save the corrective proposal.") from error
 
     return {**proposal, "task": action}
+
+
+@app.post("/api/proposals/{finding_id}")
+def create_corrective_proposal(finding_id: UUID):
+    try:
+        finding = get_finding(finding_id)
+    except psycopg.Error as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not read the finding.",
+        ) from error
+
+    if finding is None:
+        raise HTTPException(status_code=404, detail="Finding not found.")
+
+    return generate_corrective_proposal(finding)
 
 
 @app.get("/api/proposals")

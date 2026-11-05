@@ -153,6 +153,25 @@ def image_inspection_page():
             for limitation in analysis["evidence_limitations"]:
                 st.write(limitation)
 
+        if result.get("proposal_results") or result.get("proposal_errors"):
+            st.subheader("Corrective tasks")
+
+        for proposal in result.get("proposal_results", []):
+            task = proposal["task"]
+            if proposal["decision"] == "NEW_PROPOSAL":
+                st.success(f"Awaiting supervisor approval: {task['title']}")
+            else:
+                st.info(f"Existing task suggested for this finding: {task['title']}")
+
+            st.caption(f"Task: {task['id']} · Status: {task['status']}")
+
+        for error in result.get("proposal_errors", []):
+            st.warning(
+                f"Inspection saved, but proposal generation failed: {error['error']}"
+            )
+            if error["finding_id"]:
+                st.caption(f"Finding ID for manual retry: {error['finding_id']}")
+
 
 def category_supervisor_page():
     st.title("Category Supervisor")
@@ -551,10 +570,56 @@ def corrective_actions_page():
         st.rerun()
 
 
+def head_supervisor_page():
+    st.title("Head Supervisor")
+
+    try:
+        response = httpx.get(
+            "http://127.0.0.1:8000/api/dashboard",
+            timeout=30,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as error:
+        st.error(f"Could not load dashboard tasks: {error}")
+        return
+
+    tasks = response.json()
+    category = st.selectbox(
+        "Category",
+        ["All categories"] + [item.value for item in InspectionCategory],
+    )
+    if category != "All categories":
+        tasks = [task for task in tasks if task["category"] == category]
+
+    statuses = {
+        "Pending approval": "PENDING_APPROVAL",
+        "Open": "OPEN",
+        "Pending verification": "PENDING_VERIFICATION",
+        "Closed": "CLOSED",
+        "Rejected": "REJECTED",
+    }
+    for column, (label, status) in zip(st.columns(5), statuses.items()):
+        column.metric(label, sum(task["status"] == status for task in tasks))
+
+    if not tasks:
+        st.info("No corrective tasks for the selected category.")
+        return
+
+    st.dataframe(
+        tasks,
+        column_order=[
+            "id", "category", "title", "description", "status",
+            "created_at", "closed_at",
+        ],
+        hide_index=True,
+    )
+
+
 page = st.navigation([
     st.Page(conversation_page, title="Conversation", default=True),
     st.Page(image_inspection_page, title="Image Inspection"),
     st.Page(corrective_actions_page, title="Corrective Actions"),
     st.Page(category_supervisor_page, title="Category Supervisor"),
+    st.Page(head_supervisor_page, title="Head Supervisor"),
 ])
 page.run()

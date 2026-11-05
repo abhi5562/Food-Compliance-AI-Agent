@@ -15,6 +15,10 @@ class ConversationState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
 
 
+class SOPQueryRoute(BaseModel):
+    route: Literal["RELATED", "UNRELATED"]
+
+
 class InspectionFinding(BaseModel):
     observation: str = Field(min_length=1, description="Visible evidence of a potential violation in the image.")
     sop_requirement: str = Field(min_length=1)
