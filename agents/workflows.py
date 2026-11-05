@@ -113,9 +113,9 @@ def create_inspection_workflow():
                 isinstance(message, ToolMessage)
                 and message.name == "rag_tool"
                 and message.status == "success"
-                and message.artifact
+                and message.content
             ):
-                for passage in message.artifact:
+                for passage in json.loads(message.content):
                     evidence.append(passage)
         analysis = result.get("structured_response")
         return {

@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_core.tools import tool
+import json
 import os
 from uuid import uuid4
 
@@ -15,7 +16,7 @@ vector_store = PineconeVectorStore(
     text_key="text",
 )
 
-@tool(response_format="content_and_artifact")
+@tool
 def rag_tool(query: str):
     """Search demonstration restaurant SOPs for food safety and kitchen procedures.
 
@@ -35,4 +36,4 @@ def rag_tool(query: str):
         for retrieved_chunk in retriever.invoke(query)
     ]
 
-    return context, context
+    return json.dumps(context)
