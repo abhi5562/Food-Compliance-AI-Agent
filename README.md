@@ -22,6 +22,12 @@ Inspection results distinguish `NO_ISSUE_OBSERVED`, `POTENTIAL_VIOLATION`, and `
 
 Before drafting a new corrective proposal, the application checks unresolved tasks for the same finding and asks the corrective-action agent to identify possible duplicates within the selected category. A supervisor must approve a proposal before it becomes an open task. Correction verification compares the original and correction photos against the saved finding and SOP evidence; the supervisor makes the final closure decision.
 
+## Why CrewAI and A2A?
+
+I used LangGraph for inspections, correction verification, and SOP questions, and kept corrective-action planning separate in CrewAI. If I adapt the application for other restaurants, each may have different rules for drafting proposals and reviewing findings. This separation lets me change the corrective-action workflow without having to redesign the inspection workflow. CrewAI also gives me room to expand corrective-action planning into multiple specialized agents as those needs grow.
+
+I connected the two through A2A so they communicate through a defined interface and can evolve independently. Another LangGraph agent could handle the same task, but I also wanted hands-on experience connecting agents built with different frameworks.
+
 ## Components
 
 | Component | Responsibility | Location |
